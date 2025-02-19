@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>2D Sword Duel - Multiplayer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Lobby Screen -->
+  <div id="lobby">
+    <h1>2D Sword Duel</h1>
+    <div id="lobbyInfo">
+      Available Lobby: <span id="playerCount">0</span> player(s) joined
+    </div>
+    <button id="joinGame">Join Game</button>
+  </div>
+  
+  <!-- Game Screen -->
+  <div id="gameContainer" style="display:none;">
+    <canvas id="gameCanvas" width="600" height="600"></canvas>
+    <button id="returnLobby" class="return-btn">Return to Lobby</button>
+  </div>
+  
+  <!-- Include Socket.io client library -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

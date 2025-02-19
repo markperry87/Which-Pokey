@@ -1,0 +1,40 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background-color: #f0f0f0;
+  text-align: center;
+}
+
+#lobby {
+  margin-top: 50px;
+}
+
+#lobby h1 {
+  font-size: 48px;
+  margin-bottom: 20px;
+}
+
+#lobbyInfo {
+  font-size: 24px;
+  margin-bottom: 20px;
+}
+
+#joinGame, .return-btn {
+  padding: 10px 20px;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+#gameContainer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+canvas {
+  border: 2px solid #333;
+  margin-bottom: 20px;
+}
