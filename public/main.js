@@ -163,6 +163,7 @@ class Sword {
 }
 
 // --- Player Class ---
+// The key change here: Only the controlled player will run physics simulation.
 class Player {
   constructor(x, y, radius, color) {
     this.x = x; this.y = y; this.radius = radius; this.color = color;
@@ -173,7 +174,7 @@ class Player {
   }
   
   update() {
-    // Only the controlled player should run full physics simulation.
+    // Only run physics simulation if this is the controlled player.
     if (!this.isControlled) return;
     
     if (this.isControlled && !roundOver && !inCountdown && !matchOver && !remoteDisconnected) {
@@ -182,20 +183,22 @@ class Player {
       if (keys['a']) { this.vx -= this.acceleration; }
       if (keys['d']) { this.vx += this.acceleration; }
     }
-    this.vx *= this.friction; this.vy *= this.friction;
+    this.vx *= this.friction; 
+    this.vy *= this.friction;
     const speed = Math.hypot(this.vx, this.vy);
     if (speed > this.maxSpeed) {
       this.vx = (this.vx / speed) * this.maxSpeed;
       this.vy = (this.vy / speed) * this.maxSpeed;
     }
-    this.x += this.vx; this.y += this.vy;
+    this.x += this.vx; 
+    this.y += this.vy;
     
     if (this.x - this.radius < 0) { this.x = this.radius; this.vx = Math.abs(this.vx) * this.bounceFactor; }
     if (this.x + this.radius > canvas.width) { this.x = canvas.width - this.radius; this.vx = -Math.abs(this.vx) * this.bounceFactor; }
     if (this.y - this.radius < 0) { this.y = this.radius; this.vy = Math.abs(this.vy) * this.bounceFactor; }
     if (this.y + this.radius > canvas.height) { this.y = canvas.height - this.radius; this.vy = -Math.abs(this.vy) * this.bounceFactor; }
     
-    // Only update the sword locally for the controlled player.
+    // Update sword only for the controlled player.
     this.sword.update();
   }
   
@@ -334,10 +337,10 @@ let myPlayer, remotePlayer;
 // Update remote player's state when received.
 socket.on('playerState', (data) => {
   remoteLastUpdate = performance.now();
-  remotePlayer.x += (data.x - remotePlayer.x) * 0.1;
-  remotePlayer.y += (data.y - remotePlayer.y) * 0.1;
-  remotePlayer.vx += (data.vx - remotePlayer.vx) * 0.1;
-  remotePlayer.vy += (data.vy - remotePlayer.vy) * 0.1;
+  remotePlayer.x += (data.x - remotePlayer.x) * 0.05;
+  remotePlayer.y += (data.y - remotePlayer.y) * 0.05;
+  remotePlayer.vx = data.vx;
+  remotePlayer.vy = data.vy;
   remotePlayer.sword.state = data.swordState;
   remotePlayer.sword.startAngle = data.swordStartAngle;
   remotePlayer.sword.endAngle = data.swordEndAngle;
@@ -389,7 +392,7 @@ function gameLoop() {
   
   if (!matchOver && !roundOver && !inCountdown && !remoteDisconnected && myPlayer && remotePlayer) {
     myPlayer.update();
-    remotePlayer.update(); // For remote players, update() is now a no-op.
+    // Remote player's update() is now a no-op.
     handlePlayerCollision(myPlayer, remotePlayer);
     checkSwordHits();
     let swordProgress = 0;
@@ -411,7 +414,7 @@ function gameLoop() {
     });
   } else if (inCountdown && myPlayer && remotePlayer) {
     myPlayer.update();
-    remotePlayer.update();
+    // Remote player's state is updated via network.
   }
   
   myPlayer.draw();
