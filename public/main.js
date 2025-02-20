@@ -173,6 +173,9 @@ class Player {
   }
   
   update() {
+    // Only the controlled player should run full physics simulation.
+    if (!this.isControlled) return;
+    
     if (this.isControlled && !roundOver && !inCountdown && !matchOver && !remoteDisconnected) {
       if (keys['w']) { this.vy -= this.acceleration; }
       if (keys['s']) { this.vy += this.acceleration; }
@@ -192,7 +195,8 @@ class Player {
     if (this.y - this.radius < 0) { this.y = this.radius; this.vy = Math.abs(this.vy) * this.bounceFactor; }
     if (this.y + this.radius > canvas.height) { this.y = canvas.height - this.radius; this.vy = -Math.abs(this.vy) * this.bounceFactor; }
     
-    if (this.isControlled) { this.sword.update(); }
+    // Only update the sword locally for the controlled player.
+    this.sword.update();
   }
   
   draw() {
@@ -385,7 +389,7 @@ function gameLoop() {
   
   if (!matchOver && !roundOver && !inCountdown && !remoteDisconnected && myPlayer && remotePlayer) {
     myPlayer.update();
-    remotePlayer.update();
+    remotePlayer.update(); // For remote players, update() is now a no-op.
     handlePlayerCollision(myPlayer, remotePlayer);
     checkSwordHits();
     let swordProgress = 0;
