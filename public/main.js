@@ -85,6 +85,11 @@ let countdownStartTime = performance.now();
 let remoteDisconnected = false;
 let remoteLastUpdate = performance.now();
 
+// Game timing variables
+let lastFrameTime = 0;
+const TARGET_FPS = 60;
+const TARGET_FRAME_TIME = 1000 / TARGET_FPS;
+
 // Starting positions
 const startingPositions = {
   player1: { x: 100, y: 100 },
@@ -128,7 +133,7 @@ class Sword {
     }
   }
   
-  update() {
+  update(deltaTime) {
     if (this.state === "swinging") {
       const now = performance.now();
       const elapsed = now - this.startTime;
@@ -163,7 +168,6 @@ class Sword {
 }
 
 // --- Player Class ---
-// The key change here: Only the controlled player will run physics simulation.
 class Player {
   constructor(x, y, radius, color) {
     this.x = x; this.y = y; this.radius = radius; this.color = color;
@@ -171,35 +175,48 @@ class Player {
     this.acceleration = 0.7; this.friction = 0.85; this.maxSpeed = 6; this.bounceFactor = 0.2;
     this.sword = new Sword(this);
     this.isControlled = false;
+    // For network interpolation
+    this.targetX = x;
+    this.targetY = y;
+    this.lerpFactor = 0.2; // Adjust for smoother/faster interpolation
   }
   
-  update() {
-    // Only run physics simulation if this is the controlled player.
-    if (!this.isControlled) return;
+  update(deltaTime) {
+    const deltaFactor = deltaTime / TARGET_FRAME_TIME;
     
-    if (this.isControlled && !roundOver && !inCountdown && !matchOver && !remoteDisconnected) {
-      if (keys['w']) { this.vy -= this.acceleration; }
-      if (keys['s']) { this.vy += this.acceleration; }
-      if (keys['a']) { this.vx -= this.acceleration; }
-      if (keys['d']) { this.vx += this.acceleration; }
+    if (this.isControlled) {
+      // Handle local player physics
+      if (!roundOver && !inCountdown && !matchOver && !remoteDisconnected) {
+        if (keys['w']) { this.vy -= this.acceleration * deltaFactor; }
+        if (keys['s']) { this.vy += this.acceleration * deltaFactor; }
+        if (keys['a']) { this.vx -= this.acceleration * deltaFactor; }
+        if (keys['d']) { this.vx += this.acceleration * deltaFactor; }
+      }
+      
+      this.vx *= Math.pow(this.friction, deltaFactor);
+      this.vy *= Math.pow(this.friction, deltaFactor);
+      
+      const speed = Math.hypot(this.vx, this.vy);
+      if (speed > this.maxSpeed) {
+        this.vx = (this.vx / speed) * this.maxSpeed;
+        this.vy = (this.vy / speed) * this.maxSpeed;
+      }
+      
+      this.x += this.vx * deltaFactor;
+      this.y += this.vy * deltaFactor;
+      
+      if (this.x - this.radius < 0) { this.x = this.radius; this.vx = Math.abs(this.vx) * this.bounceFactor; }
+      if (this.x + this.radius > canvas.width) { this.x = canvas.width - this.radius; this.vx = -Math.abs(this.vx) * this.bounceFactor; }
+      if (this.y - this.radius < 0) { this.y = this.radius; this.vy = Math.abs(this.vy) * this.bounceFactor; }
+      if (this.y + this.radius > canvas.height) { this.y = canvas.height - this.radius; this.vy = -Math.abs(this.vy) * this.bounceFactor; }
+    } else {
+      // For remote player, smoothly interpolate to target position
+      this.x += (this.targetX - this.x) * this.lerpFactor;
+      this.y += (this.targetY - this.y) * this.lerpFactor;
     }
-    this.vx *= this.friction; 
-    this.vy *= this.friction;
-    const speed = Math.hypot(this.vx, this.vy);
-    if (speed > this.maxSpeed) {
-      this.vx = (this.vx / speed) * this.maxSpeed;
-      this.vy = (this.vy / speed) * this.maxSpeed;
-    }
-    this.x += this.vx; 
-    this.y += this.vy;
     
-    if (this.x - this.radius < 0) { this.x = this.radius; this.vx = Math.abs(this.vx) * this.bounceFactor; }
-    if (this.x + this.radius > canvas.width) { this.x = canvas.width - this.radius; this.vx = -Math.abs(this.vx) * this.bounceFactor; }
-    if (this.y - this.radius < 0) { this.y = this.radius; this.vy = Math.abs(this.vy) * this.bounceFactor; }
-    if (this.y + this.radius > canvas.height) { this.y = canvas.height - this.radius; this.vy = -Math.abs(this.vy) * this.bounceFactor; }
-    
-    // Update sword only for the controlled player.
-    this.sword.update();
+    // Update sword regardless of controlled status
+    this.sword.update(deltaTime);
   }
   
   draw() {
@@ -263,8 +280,11 @@ function resetRound() {
   remoteLastUpdate = performance.now();
   
   player1.x = startingPositions.player1.x; player1.y = startingPositions.player1.y;
+  player1.targetX = startingPositions.player1.x; player1.targetY = startingPositions.player1.y;
   player1.vx = 0; player1.vy = 0; player1.sword.state = "idle";
+  
   player2.x = startingPositions.player2.x; player2.y = startingPositions.player2.y;
+  player2.targetX = startingPositions.player2.x; player2.targetY = startingPositions.player2.y;
   player2.vx = 0; player2.vy = 0; player2.sword.state = "idle";
   
   if (score1 === 3 || score2 === 3) { matchOver = true; }
@@ -337,8 +357,11 @@ let myPlayer, remotePlayer;
 // Update remote player's state when received.
 socket.on('playerState', (data) => {
   remoteLastUpdate = performance.now();
-  remotePlayer.x += (data.x - remotePlayer.x) * 0.05;
-  remotePlayer.y += (data.y - remotePlayer.y) * 0.05;
+  
+  // Update the target position directly - will be interpolated in update
+  remotePlayer.targetX = data.x;
+  remotePlayer.targetY = data.y;
+  
   remotePlayer.vx = data.vx;
   remotePlayer.vy = data.vy;
   remotePlayer.sword.state = data.swordState;
@@ -379,9 +402,13 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 let gameLoopId = null;
-function gameLoop() {
+function gameLoop(timestamp) {
+  if (!lastFrameTime) lastFrameTime = timestamp;
+  const deltaTime = timestamp - lastFrameTime;
+  lastFrameTime = timestamp;
+  
   if (!myPlayer || !remotePlayer) {
-    requestAnimationFrame(gameLoop);
+    gameLoopId = requestAnimationFrame(gameLoop);
     return;
   }
   
@@ -390,11 +417,14 @@ function gameLoop() {
   
   checkRemoteConnection();
   
-  if (!matchOver && !roundOver && !inCountdown && !remoteDisconnected && myPlayer && remotePlayer) {
-    myPlayer.update();
-    // Remote player's update() is now a no-op.
+  // Always update both players with delta time
+  myPlayer.update(deltaTime);
+  remotePlayer.update(deltaTime);
+  
+  if (!matchOver && !roundOver && !inCountdown && !remoteDisconnected) {
     handlePlayerCollision(myPlayer, remotePlayer);
     checkSwordHits();
+    
     let swordProgress = 0;
     if (myPlayer.sword.state === "swinging") {
       swordProgress = (performance.now() - myPlayer.sword.startTime) / myPlayer.sword.swingDuration;
@@ -402,6 +432,8 @@ function gameLoop() {
     } else if (myPlayer.sword.state === "cooldown") {
       swordProgress = 1;
     }
+    
+    // Send player state to the server at a controlled rate
     socket.emit('playerState', {
       x: myPlayer.x,
       y: myPlayer.y,
@@ -412,9 +444,6 @@ function gameLoop() {
       swordEndAngle: myPlayer.sword.endAngle,
       swordProgress: swordProgress
     });
-  } else if (inCountdown && myPlayer && remotePlayer) {
-    myPlayer.update();
-    // Remote player's state is updated via network.
   }
   
   myPlayer.draw();
@@ -444,25 +473,31 @@ function startGame() {
   countdownStartTime = performance.now();
   remoteDisconnected = false;
   remoteLastUpdate = performance.now();
+  lastFrameTime = 0;
   
   // Reset player positions and states
   player1.x = startingPositions.player1.x;
   player1.y = startingPositions.player1.y;
+  player1.targetX = startingPositions.player1.x;
+  player1.targetY = startingPositions.player1.y;
   player1.vx = 0;
   player1.vy = 0;
   player1.sword.state = "idle";
   
   player2.x = startingPositions.player2.x;
   player2.y = startingPositions.player2.y;
+  player2.targetX = startingPositions.player2.x;
+  player2.targetY = startingPositions.player2.y;
   player2.vx = 0;
   player2.vy = 0;
   player2.sword.state = "idle";
   
-  gameLoop();
+  requestAnimationFrame(gameLoop);
 }
 
 function stopGame() {
   if (gameLoopId) {
     cancelAnimationFrame(gameLoopId);
+    gameLoopId = null;
   }
 }
