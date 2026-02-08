@@ -1301,7 +1301,7 @@ function updateGame(dt) {
     }
 
     // Dash trigger
-    const now = performance.now();
+    let now = performance.now();
     if (G.keys[' '] && !p.dashing && now >= p.dashCooldownEnd) {
         p.dashing = true;
         p.dashTimer = CFG.DASH_DURATION;
@@ -1455,7 +1455,7 @@ function updateGame(dt) {
     }
 
     // Send state (multiplayer only)
-    const now = performance.now();
+    now = performance.now();
     if (!G.isAIMode && now - G.lastStateSend >= CFG.STATE_RATE) {
         G.lastStateSend = now;
         G.net.send({
