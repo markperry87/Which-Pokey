@@ -13,16 +13,19 @@ const CFG = {
     // Physics
     FRICTION: 0.88,
 
-    // Sword defaults (overridden by selection)
-    SWING_ARC: Math.PI / 2,   // 90°
-    SWING_DUR: 150,            // ms
-    SWING_CD: 200,             // ms cooldown after swing
+    // Sword clash
+    SWORD_CLASH_BOUNCE: 300,
+    SWORD_CLASH_COOLDOWN: 0.3,  // seconds between clashes
 
     // Rounds
     WINS_NEEDED: 3,
     COUNTDOWN_SEC: 3,
     ROUND_END_PAUSE: 1800,    // ms after a hit before next round
     MATCH_END_PAUSE: 3500,
+
+    // Replay
+    REPLAY_BUFFER_SIZE: 120,  // ~2s at 60fps
+    REPLAY_SPEED: 2,          // playback speed multiplier
 
     // Network
     PEER_PREFIX: 'whichpokey-',
@@ -45,6 +48,13 @@ function genCode() {
     return c;
 }
 
+// Normalize angle to [-PI, PI]
+function normAngle(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+}
+
 // Line segment vs circle intersection
 function segCircle(ax, ay, bx, by, cx, cy, r) {
     const dx = bx - ax, dy = by - ay;
@@ -58,6 +68,28 @@ function segCircle(ax, ay, bx, by, cx, cy, r) {
     const t1 = (-b - disc) / (2 * a);
     const t2 = (-b + disc) / (2 * a);
     return (t1 >= 0 && t1 <= 1) || (t2 >= 0 && t2 <= 1) || (t1 < 0 && t2 > 1);
+}
+
+// Line segment vs line segment intersection
+function segSeg(ax, ay, bx, by, cx, cy, dx, dy) {
+    const rx = bx - ax, ry = by - ay;
+    const sx = dx - cx, sy = dy - cy;
+    const denom = rx * sy - ry * sx;
+    if (Math.abs(denom) < 1e-10) return false;
+    const t = ((cx - ax) * sy - (cy - ay) * sx) / denom;
+    const u = ((cx - ax) * ry - (cy - ay) * rx) / denom;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+// Get sword start/end coords for a player
+function getSwordSegment(p) {
+    const sAngle = p.swordAngle;
+    return {
+        x1: p.x + Math.cos(sAngle) * p.body.radius,
+        y1: p.y + Math.sin(sAngle) * p.body.radius,
+        x2: p.x + Math.cos(sAngle) * (p.body.radius + p.sword.length),
+        y2: p.y + Math.sin(sAngle) * (p.body.radius + p.sword.length),
+    };
 }
 
 // ===== AUDIO SYSTEM =========================================
@@ -121,6 +153,34 @@ const Audio = (() => {
                 g2.gain.setValueAtTime(0.5, c.currentTime);
                 g2.gain.linearRampToValueAtTime(0, c.currentTime + dur);
                 s.connect(g2).connect(c.destination); s.start();
+            });
+        },
+
+        clang() {
+            play(c => {
+                // Metallic ring – two detuned oscillators
+                const dur = 0.25;
+                [1800, 2400].forEach(freq => {
+                    const osc = c.createOscillator();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(freq, c.currentTime);
+                    osc.frequency.exponentialRampToValueAtTime(freq * 0.6, c.currentTime + dur);
+                    const g = c.createGain();
+                    g.gain.setValueAtTime(0.2, c.currentTime);
+                    g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
+                    osc.connect(g).connect(c.destination);
+                    osc.start(); osc.stop(c.currentTime + dur);
+                });
+                // Short noise click
+                const nDur = 0.03;
+                const buf = c.createBuffer(1, c.sampleRate * nDur, c.sampleRate);
+                const d = buf.getChannelData(0);
+                for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) * 0.4;
+                const s = c.createBufferSource(); s.buffer = buf;
+                const g = c.createGain();
+                g.gain.setValueAtTime(0.3, c.currentTime);
+                g.gain.linearRampToValueAtTime(0, c.currentTime + nDur);
+                s.connect(g).connect(c.destination); s.start();
             });
         },
 
@@ -267,15 +327,14 @@ function generateBodyOptions(handicap = 0) {
 function generateSwordOptions(handicap = 0) {
     const options = [];
     for (let i = 0; i < 3; i++) {
-        // Handicap pushes length down and duration up (shorter & slower = worse)
+        // Handicap pushes length down (shorter = worse)
         const lengthMin = Math.max(28, 55 - handicap * 8);
         const lengthMax = Math.max(45, 90 - handicap * 5);
         const length = rand(lengthMin, lengthMax);
 
         const lenRatio = (length - 25) / 65; // 0 = short, 1 = long
-        const swingDur = lerp(100, 260, lenRatio) + rand(-30, 30);
-        const cooldown = lerp(140, 320, lenRatio) + rand(-30, 30);
-        const arcAngle = lerp(70, 120, rand(0, 1)); // degrees, fairly random
+        // Track speed: longer swords track slower
+        const trackSpeed = lerp(12, 4, lenRatio) + rand(-1.5, 1.5);
 
         let nameList;
         if (length < 45) nameList = SWORD_NAMES_SHORT;
@@ -285,9 +344,7 @@ function generateSwordOptions(handicap = 0) {
         options.push({
             length: Math.round(length),
             width: Math.round(lerp(3, 7, lenRatio) + rand(-1, 1)),
-            swingDur: Math.round(clamp(swingDur, 80, 300)),
-            cooldown: Math.round(clamp(cooldown, 120, 360)),
-            arcAngle: Math.round(clamp(arcAngle, 55, 130)),
+            trackSpeed: +clamp(trackSpeed, 3, 14).toFixed(1),
             name: pick(nameList),
         });
     }
@@ -379,15 +436,6 @@ function drawSwordPreview(cvs, sword) {
     ctx.fillRect(-14, -3, 14, 6);
 
     ctx.restore();
-
-    // Arc indicator
-    const arcRad = 25;
-    const arcAngle = (sword.arcAngle * Math.PI) / 180;
-    ctx.strokeStyle = 'rgba(255,170,34,0.3)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(w * 0.25, h * 0.75, arcRad, -Math.PI / 4 - arcAngle / 2, -Math.PI / 4 + arcAngle / 2);
-    ctx.stroke();
 }
 
 // ===== NETWORK MANAGER ======================================
@@ -484,7 +532,7 @@ class Network {
 // ===== GAME STATE ===========================================
 const G = {
     // State machine
-    state: 'menu', // menu, lobby, select, countdown, playing, roundEnd, matchEnd
+    state: 'menu', // menu, lobby, select, countdown, playing, replay, roundEnd, matchEnd
 
     // AI mode
     isAIMode: false,
@@ -546,6 +594,13 @@ const G = {
     // Sword trails
     trails: [],
 
+    // Replay
+    replayBuffer: [],
+    replayData: null,
+    replayIndex: 0,
+    replayTimer: 0,
+    pendingHitWinner: 0,
+
     // Time
     lastTime: 0,
 };
@@ -572,11 +627,9 @@ function createPlayer(num, body, sword) {
 
         // Sword state
         swordAngle: num === 1 ? 0 : Math.PI,  // default facing
-        swinging: false,
-        swingStart: 0,
-        swingTargetAngle: 0,
-        canSwing: true,
-        swingCooldownEnd: 0,
+
+        // Clash cooldown
+        lastClashTime: 0,
 
         // Mouse (for remote display)
         mouseAngle: num === 1 ? 0 : Math.PI,
@@ -594,11 +647,9 @@ function resetPlayerPosition(p) {
     p._targetY = p.startY;
     p.vx = 0;
     p.vy = 0;
-    p.swinging = false;
-    p.canSwing = true;
-    p.swingCooldownEnd = 0;
     p.swordAngle = p.num === 1 ? 0 : Math.PI;
     p.mouseAngle = p.num === 1 ? 0 : Math.PI;
+    p.lastClashTime = 0;
 }
 
 // ===== INPUT ================================================
@@ -771,6 +822,8 @@ function resetToMenu() {
     G.selectedSword = -1;
     Particles.clear();
     G.trails = [];
+    G.replayBuffer = [];
+    G.replayData = null;
     showScreen('menu');
 
     // Re-enable buttons
@@ -820,7 +873,6 @@ function startSelection() {
 function renderSelectionCards() {
     const bodyContainer = document.getElementById('body-options');
     const swordContainer = document.getElementById('sword-options');
-    const pColor = G.playerNum === 1 ? 'var(--p1)' : 'var(--p2)';
 
     bodyContainer.innerHTML = '';
     swordContainer.innerHTML = '';
@@ -901,10 +953,8 @@ function renderSelectionCards() {
 
         // Length stat: normalize 25-90
         const lengthPct = ((sword.length - 25) / 65) * 100;
-        // Swing speed: invert duration 80-300 → faster = higher bar
-        const swingPct = ((300 - sword.swingDur) / 220) * 100;
-        // Arc: normalize 55-130
-        const arcPct = ((sword.arcAngle - 55) / 75) * 100;
+        // Track speed: normalize 3-14
+        const trackPct = ((sword.trackSpeed - 3) / 11) * 100;
 
         card.appendChild(preview);
 
@@ -921,12 +971,8 @@ function renderSelectionCards() {
                 <div class="stat-bar-bg"><div class="stat-bar length" style="width:${lengthPct}%"></div></div>
             </div>
             <div class="stat-row">
-                <span class="stat-label">Speed</span>
-                <div class="stat-bar-bg"><div class="stat-bar swing" style="width:${swingPct}%"></div></div>
-            </div>
-            <div class="stat-row">
-                <span class="stat-label">Arc</span>
-                <div class="stat-bar-bg"><div class="stat-bar arc" style="width:${arcPct}%"></div></div>
+                <span class="stat-label">Track</span>
+                <div class="stat-bar-bg"><div class="stat-bar track" style="width:${trackPct}%"></div></div>
             </div>
         `;
         card.appendChild(sStatsDiv);
@@ -1003,18 +1049,7 @@ function handleNetMessage(data) {
                 G.remote.vx = data.vx;
                 G.remote.vy = data.vy;
                 G.remote.swordAngle = data.swordAngle;
-                G.remote.swinging = data.swinging;
                 G.remote.mouseAngle = data.mouseAngle;
-            }
-            break;
-
-        case 'swing':
-            if (G.remote && G.state === 'playing') {
-                G.remote.swinging = true;
-                G.remote.swingStart = performance.now();
-                G.remote.swingTargetAngle = data.angle;
-                G.remote.canSwing = false;
-                Audio.whoosh();
             }
             break;
 
@@ -1082,11 +1117,27 @@ function startCountdown() {
     resetPlayerPosition(G.p2);
     Particles.clear();
     G.trails = [];
+    G.replayBuffer = [];
+    G.replayData = null;
 
     if (G.isAIMode) initAIState();
 }
 
 function handleHit(winnerNum) {
+    // Capture replay buffer before transitioning
+    if (G.replayBuffer.length > 10) {
+        G.replayData = G.replayBuffer.slice();
+        G.replayIndex = 0;
+        G.replayTimer = 0;
+        G.pendingHitWinner = winnerNum;
+        G.state = 'replay';
+    } else {
+        // Not enough data for replay, go straight to score
+        finishHit(winnerNum);
+    }
+}
+
+function finishHit(winnerNum) {
     G.state = 'roundEnd';
 
     if (winnerNum === 1) G.p1Score++;
@@ -1177,6 +1228,12 @@ function updateGame(dt) {
         return;
     }
 
+    // Replay playback
+    if (G.state === 'replay') {
+        updateReplay(dt);
+        return;
+    }
+
     if (G.state !== 'playing') return;
 
     // Local player input
@@ -1247,45 +1304,24 @@ function updateGame(dt) {
     // Mouse angle
     p.mouseAngle = angle(p.x, p.y, G.mouseX, G.mouseY);
 
-    // Sword swing
-    const now = performance.now();
-
-    if (G.mouseClicked && p.canSwing && !p.swinging) {
-        p.swinging = true;
-        p.swingStart = now;
-        p.swingTargetAngle = p.mouseAngle;
-        p.canSwing = false;
-        Audio.whoosh();
-
-        if (!G.isAIMode) G.net.send({ type: 'swing', angle: p.mouseAngle });
-    }
-
-    if (p.swinging) {
-        const elapsed = now - p.swingStart;
-        if (elapsed >= p.sword.swingDur) {
-            p.swinging = false;
-            p.swingCooldownEnd = now + p.sword.cooldown;
-        } else {
-            const arcRad = (p.sword.arcAngle * Math.PI) / 180;
-            const t = elapsed / p.sword.swingDur;
-            p.swordAngle = p.swingTargetAngle - arcRad / 2 + arcRad * t;
-
-            // Add trail
-            const tipX = p.x + Math.cos(p.swordAngle) * (p.body.radius + p.sword.length);
-            const tipY = p.y + Math.sin(p.swordAngle) * (p.body.radius + p.sword.length);
-            G.trails.push({ x: tipX, y: tipY, life: 0.15, maxLife: 0.15, color: p.color });
-        }
+    // Smooth sword tracking toward mouse angle
+    const targetAngle = p.mouseAngle;
+    const angleDiff = normAngle(targetAngle - p.swordAngle);
+    const maxRot = p.sword.trackSpeed * dt;
+    if (Math.abs(angleDiff) < maxRot) {
+        p.swordAngle = targetAngle;
     } else {
-        // Sword follows mouse when not swinging
-        p.swordAngle = p.mouseAngle;
-        if (!p.canSwing && now >= p.swingCooldownEnd) {
-            p.canSwing = true;
-        }
+        p.swordAngle = normAngle(p.swordAngle + Math.sign(angleDiff) * maxRot);
     }
+
+    // Always generate trail at sword tip
+    const tipX = p.x + Math.cos(p.swordAngle) * (p.body.radius + p.sword.length);
+    const tipY = p.y + Math.sin(p.swordAngle) * (p.body.radius + p.sword.length);
+    G.trails.push({ x: tipX, y: tipY, life: 0.12, maxLife: 0.12, color: p.color });
 
     // AI mode: run AI logic with full physics
     if (G.isAIMode) {
-        updateAI(dt, now);
+        updateAI(dt);
     } else {
         // Interpolate remote player position toward last received state
         if (G.remote._targetX !== undefined) {
@@ -1294,26 +1330,21 @@ function updateGame(dt) {
         }
     }
 
-    // Update remote player's swing
-    if (G.remote.swinging) {
-        const elapsed = now - r.swingStart;
-        if (elapsed >= r.sword.swingDur) {
-            r.swinging = false;
-            r.swingCooldownEnd = now + r.sword.cooldown;
+    // Remote player sword tracking (for networked games)
+    if (!G.isAIMode) {
+        const rTarget = r.mouseAngle;
+        const rDiff = normAngle(rTarget - r.swordAngle);
+        const rMaxRot = r.sword.trackSpeed * dt;
+        if (Math.abs(rDiff) < rMaxRot) {
+            r.swordAngle = rTarget;
         } else {
-            const arcRad = (r.sword.arcAngle * Math.PI) / 180;
-            const t = elapsed / r.sword.swingDur;
-            r.swordAngle = r.swingTargetAngle - arcRad / 2 + arcRad * t;
+            r.swordAngle = normAngle(r.swordAngle + Math.sign(rDiff) * rMaxRot);
+        }
 
-            const tipX = r.x + Math.cos(r.swordAngle) * (r.body.radius + r.sword.length);
-            const tipY = r.y + Math.sin(r.swordAngle) * (r.body.radius + r.sword.length);
-            G.trails.push({ x: tipX, y: tipY, life: 0.15, maxLife: 0.15, color: r.color });
-        }
-    } else {
-        r.swordAngle = r.mouseAngle;
-        if (!r.canSwing && now >= r.swingCooldownEnd) {
-            r.canSwing = true;
-        }
+        // Remote trail
+        const rTipX = r.x + Math.cos(r.swordAngle) * (r.body.radius + r.sword.length);
+        const rTipY = r.y + Math.sin(r.swordAngle) * (r.body.radius + r.sword.length);
+        G.trails.push({ x: rTipX, y: rTipY, life: 0.12, maxLife: 0.12, color: r.color });
     }
 
     // Update trails
@@ -1322,9 +1353,23 @@ function updateGame(dt) {
         if (G.trails[i].life <= 0) G.trails.splice(i, 1);
     }
 
+    // Record replay buffer
+    G.replayBuffer.push({
+        p1: { x: G.p1.x, y: G.p1.y, swordAngle: G.p1.swordAngle },
+        p2: { x: G.p2.x, y: G.p2.y, swordAngle: G.p2.swordAngle },
+    });
+    if (G.replayBuffer.length > CFG.REPLAY_BUFFER_SIZE) {
+        G.replayBuffer.shift();
+    }
+
+    // Sword clash detection (host or AI mode)
+    if (G.isAIMode || G.net.isHost) {
+        checkSwordClash();
+    }
+
     // Hit detection (host or AI mode)
     if (G.isAIMode || G.net.isHost) {
-        const hitResult = checkHits(now);
+        const hitResult = checkHits();
         if (hitResult) {
             if (!G.isAIMode) G.net.send({ type: 'hit', winner: hitResult });
             handleHit(hitResult);
@@ -1332,6 +1377,7 @@ function updateGame(dt) {
     }
 
     // Send state (multiplayer only)
+    const now = performance.now();
     if (!G.isAIMode && now - G.lastStateSend >= CFG.STATE_RATE) {
         G.lastStateSend = now;
         G.net.send({
@@ -1339,7 +1385,6 @@ function updateGame(dt) {
             x: p.x, y: p.y,
             vx: p.vx, vy: p.vy,
             swordAngle: p.swordAngle,
-            swinging: p.swinging,
             mouseAngle: p.mouseAngle,
         });
     }
@@ -1347,10 +1392,40 @@ function updateGame(dt) {
     // mouseClicked is reset in gameLoop, not here
 }
 
-function checkHits(now) {
-    // Check if P1's sword hits P2
-    const h1 = checkSwordHit(G.p1, G.p2, now);
-    const h2 = checkSwordHit(G.p2, G.p1, now);
+// ===== REPLAY ===============================================
+function updateReplay(dt) {
+    if (!G.replayData) return;
+
+    G.replayTimer += dt * CFG.REPLAY_SPEED;
+
+    // Advance through frames at replay speed
+    // Each frame was ~1/60s, so we advance by REPLAY_SPEED frames per 1/60s
+    const framesPerSec = 60;
+    G.replayIndex = Math.floor(G.replayTimer * framesPerSec);
+
+    if (G.replayIndex >= G.replayData.length) {
+        // Replay complete – proceed to scoring
+        const winner = G.pendingHitWinner;
+        G.replayData = null;
+        G.pendingHitWinner = 0;
+        finishHit(winner);
+        return;
+    }
+
+    // Apply recorded positions to players for rendering
+    const frame = G.replayData[G.replayIndex];
+    G.p1.x = frame.p1.x;
+    G.p1.y = frame.p1.y;
+    G.p1.swordAngle = frame.p1.swordAngle;
+    G.p2.x = frame.p2.x;
+    G.p2.y = frame.p2.y;
+    G.p2.swordAngle = frame.p2.swordAngle;
+}
+
+// ===== HIT DETECTION ========================================
+function checkHits() {
+    const h1 = checkSwordHit(G.p1, G.p2);
+    const h2 = checkSwordHit(G.p2, G.p1);
 
     if (h1 && h2) return null; // Simultaneous – no point
     if (h1) return 1;
@@ -1358,36 +1433,64 @@ function checkHits(now) {
     return null;
 }
 
-function checkSwordHit(attacker, target, now) {
-    if (!attacker.swinging) return false;
+function checkSwordHit(attacker, target) {
+    // Sword is always live – check line vs circle
+    const seg = getSwordSegment(attacker);
+    return segCircle(seg.x1, seg.y1, seg.x2, seg.y2, target.x, target.y, target.body.radius);
+}
 
-    const elapsed = now - attacker.swingStart;
-    if (elapsed < 0 || elapsed > attacker.sword.swingDur) return false;
+// ===== SWORD CLASH ==========================================
+function checkSwordClash() {
+    const now = performance.now() / 1000;
+    if (now - G.p1.lastClashTime < CFG.SWORD_CLASH_COOLDOWN) return;
+    if (now - G.p2.lastClashTime < CFG.SWORD_CLASH_COOLDOWN) return;
 
-    // Sword line
-    const sAngle = attacker.swordAngle;
-    const sStart_x = attacker.x + Math.cos(sAngle) * attacker.body.radius;
-    const sStart_y = attacker.y + Math.sin(sAngle) * attacker.body.radius;
-    const sEnd_x = attacker.x + Math.cos(sAngle) * (attacker.body.radius + attacker.sword.length);
-    const sEnd_y = attacker.y + Math.sin(sAngle) * (attacker.body.radius + attacker.sword.length);
+    const s1 = getSwordSegment(G.p1);
+    const s2 = getSwordSegment(G.p2);
 
-    return segCircle(sStart_x, sStart_y, sEnd_x, sEnd_y, target.x, target.y, target.body.radius);
+    if (segSeg(s1.x1, s1.y1, s1.x2, s1.y2, s2.x1, s2.y1, s2.x2, s2.y2)) {
+        G.p1.lastClashTime = now;
+        G.p2.lastClashTime = now;
+
+        // Bounce players apart
+        const dx = G.p2.x - G.p1.x;
+        const dy = G.p2.y - G.p1.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const nx = dx / d;
+        const ny = dy / d;
+
+        G.p1.vx -= nx * CFG.SWORD_CLASH_BOUNCE;
+        G.p1.vy -= ny * CFG.SWORD_CLASH_BOUNCE;
+        G.p2.vx += nx * CFG.SWORD_CLASH_BOUNCE;
+        G.p2.vy += ny * CFG.SWORD_CLASH_BOUNCE;
+
+        // Clash point: midpoint of intersection area (approximate with sword midpoints)
+        const cx = (s1.x2 + s2.x2) / 2;
+        const cy = (s1.y2 + s2.y2) / 2;
+
+        // Effects
+        Audio.clang();
+        Particles.spawn(cx, cy, 12, '#ffdd66', 80, 250, 0.4);
+        Particles.spawn(cx, cy, 6, '#ffffff', 50, 150, 0.3);
+
+        // Small screen shake
+        G.shakeIntensity = 5;
+        G.shakeDur = 0.15;
+    }
 }
 
 // ===== AI LOGIC =============================================
 function initAIState() {
     G.aiState = {
-        behavior: 'approach',   // approach, circle, attack, retreat, dodge
+        behavior: 'approach',   // approach, circle, retreat, dodge
         behaviorTimer: 0,       // time remaining in current behavior
         circleDir: 1,           // 1 or -1 for strafe direction
-        reactionQueue: [],      // delayed actions: [{time, action}]
-        lastSwingTime: 0,
         retreatAngle: 0,
         dodgeAngle: 0,
     };
 }
 
-function updateAI(dt, now) {
+function updateAI(dt) {
     const ai = G.remote;   // AI is always player 2 (remote)
     const pl = G.local;    // human is player 1
     const st = G.aiState;
@@ -1399,31 +1502,13 @@ function updateAI(dt, now) {
     const attackRange = ai.body.radius + ai.sword.length + pl.body.radius + 15;
     const approachRange = attackRange + 80;
 
-    // --- Reaction to player swinging: queue a dodge ---
-    if (pl.swinging && st.behavior !== 'dodge' && d < attackRange + 40) {
-        const reactionDelay = rand(0.15, 0.30);
-        if (!st._dodgeQueued) {
-            st._dodgeQueued = true;
-            st.reactionQueue.push({
-                time: now + reactionDelay * 1000,
-                action: 'dodge',
-            });
-        }
-    }
-    if (!pl.swinging) st._dodgeQueued = false;
-
-    // Process reaction queue
-    for (let i = st.reactionQueue.length - 1; i >= 0; i--) {
-        if (now >= st.reactionQueue[i].time) {
-            const act = st.reactionQueue[i].action;
-            st.reactionQueue.splice(i, 1);
-            if (act === 'dodge' && st.behavior !== 'retreat') {
-                st.behavior = 'dodge';
-                st.behaviorTimer = rand(0.2, 0.4);
-                // Dodge perpendicular to player's facing
-                st.dodgeAngle = angleToPlayer + (Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
-            }
-        }
+    // --- Dodge trigger: react to player's sword tip being close ---
+    const plSeg = getSwordSegment(pl);
+    const tipDist = dist(plSeg.x2, plSeg.y2, ai.x, ai.y);
+    if (tipDist < ai.body.radius + 40 && st.behavior !== 'dodge') {
+        st.behavior = 'dodge';
+        st.behaviorTimer = rand(0.2, 0.4);
+        st.dodgeAngle = angleToPlayer + (Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
     }
 
     // --- Behavior timer ---
@@ -1438,16 +1523,14 @@ function updateAI(dt, now) {
             st.behavior = 'circle';
             st.behaviorTimer = rand(0.5, 1.2);
             st.circleDir = Math.random() < 0.5 ? 1 : -1;
-        } else if (st.behavior === 'attack') {
-            st.behavior = 'retreat';
-            st.behaviorTimer = rand(0.3, 0.6);
-            st.retreatAngle = angleToPlayer + Math.PI + rand(-0.5, 0.5);
         } else if (d > approachRange) {
             st.behavior = 'approach';
             st.behaviorTimer = rand(0.3, 0.6);
-        } else if (d < attackRange && ai.canSwing && !ai.swinging) {
-            st.behavior = 'attack';
-            st.behaviorTimer = rand(0.1, 0.25);
+        } else if (d < attackRange - 20) {
+            // Too close, retreat
+            st.behavior = 'retreat';
+            st.behaviorTimer = rand(0.3, 0.6);
+            st.retreatAngle = angleToPlayer + Math.PI + rand(-0.5, 0.5);
         } else {
             st.behavior = 'circle';
             st.behaviorTimer = rand(0.5, 1.5);
@@ -1455,63 +1538,49 @@ function updateAI(dt, now) {
         }
     }
 
-    // Attempt attack from circle/approach when in range
-    if ((st.behavior === 'circle' || st.behavior === 'approach') &&
-        d < attackRange && ai.canSwing && !ai.swinging &&
-        now - st.lastSwingTime > 400) {
-        st.behavior = 'attack';
-        st.behaviorTimer = rand(0.05, 0.15);
-    }
-
     // --- Compute desired movement direction ---
-    let ax = 0, ay = 0;
+    let moveX = 0, moveY = 0;
 
     switch (st.behavior) {
         case 'approach': {
-            ax = Math.cos(angleToPlayer);
-            ay = Math.sin(angleToPlayer);
+            moveX = Math.cos(angleToPlayer);
+            moveY = Math.sin(angleToPlayer);
             break;
         }
         case 'circle': {
             const strafeAngle = angleToPlayer + (Math.PI / 2) * st.circleDir;
             // Slight inward drift to maintain range
             const drift = d > approachRange ? 0.4 : (d < attackRange - 20 ? -0.3 : 0);
-            ax = Math.cos(strafeAngle) + Math.cos(angleToPlayer) * drift;
-            ay = Math.sin(strafeAngle) + Math.sin(angleToPlayer) * drift;
-            break;
-        }
-        case 'attack': {
-            // Move slightly toward player during attack wind-up
-            ax = Math.cos(angleToPlayer) * 0.5;
-            ay = Math.sin(angleToPlayer) * 0.5;
+            moveX = Math.cos(strafeAngle) + Math.cos(angleToPlayer) * drift;
+            moveY = Math.sin(strafeAngle) + Math.sin(angleToPlayer) * drift;
             break;
         }
         case 'retreat': {
-            ax = Math.cos(st.retreatAngle);
-            ay = Math.sin(st.retreatAngle);
+            moveX = Math.cos(st.retreatAngle);
+            moveY = Math.sin(st.retreatAngle);
             break;
         }
         case 'dodge': {
-            ax = Math.cos(st.dodgeAngle);
-            ay = Math.sin(st.dodgeAngle);
+            moveX = Math.cos(st.dodgeAngle);
+            moveY = Math.sin(st.dodgeAngle);
             break;
         }
     }
 
     // Normalize
-    const mag = Math.hypot(ax, ay);
-    if (mag > 0.01) { ax /= mag; ay /= mag; }
+    const mag = Math.hypot(moveX, moveY);
+    if (mag > 0.01) { moveX /= mag; moveY /= mag; }
 
     // --- Apply same physics as local player ---
-    ai.vx += ax * ai.body.accel * dt;
-    ai.vy += ay * ai.body.accel * dt;
+    ai.vx += moveX * ai.body.accel * dt;
+    ai.vy += moveY * ai.body.accel * dt;
 
     ai.vx *= Math.pow(ai.body.friction, dt * 60);
     ai.vy *= Math.pow(ai.body.friction, dt * 60);
 
-    const speed = Math.hypot(ai.vx, ai.vy);
-    if (speed > ai.body.maxSpeed) {
-        const s = ai.body.maxSpeed / speed;
+    const spd = Math.hypot(ai.vx, ai.vy);
+    if (spd > ai.body.maxSpeed) {
+        const s = ai.body.maxSpeed / spd;
         ai.vx *= s;
         ai.vy *= s;
     }
@@ -1520,21 +1589,21 @@ function updateAI(dt, now) {
     ai.y += ai.vy * dt;
 
     // Arena bounds with bounce
-    const minX = CFG.ARENA_PAD + ai.body.radius;
-    const maxX = CFG.ARENA_W - CFG.ARENA_PAD - ai.body.radius;
-    const minY = CFG.ARENA_PAD + ai.body.radius;
-    const maxY = CFG.ARENA_H - CFG.ARENA_PAD - ai.body.radius;
+    const aiMinX = CFG.ARENA_PAD + ai.body.radius;
+    const aiMaxX = CFG.ARENA_W - CFG.ARENA_PAD - ai.body.radius;
+    const aiMinY = CFG.ARENA_PAD + ai.body.radius;
+    const aiMaxY = CFG.ARENA_H - CFG.ARENA_PAD - ai.body.radius;
 
-    if (ai.x < minX) { ai.x = minX; ai.vx = Math.abs(ai.vx) * CFG.WALL_BOUNCE; }
-    if (ai.x > maxX) { ai.x = maxX; ai.vx = -Math.abs(ai.vx) * CFG.WALL_BOUNCE; }
-    if (ai.y < minY) { ai.y = minY; ai.vy = Math.abs(ai.vy) * CFG.WALL_BOUNCE; }
-    if (ai.y > maxY) { ai.y = maxY; ai.vy = -Math.abs(ai.vy) * CFG.WALL_BOUNCE; }
+    if (ai.x < aiMinX) { ai.x = aiMinX; ai.vx = Math.abs(ai.vx) * CFG.WALL_BOUNCE; }
+    if (ai.x > aiMaxX) { ai.x = aiMaxX; ai.vx = -Math.abs(ai.vx) * CFG.WALL_BOUNCE; }
+    if (ai.y < aiMinY) { ai.y = aiMinY; ai.vy = Math.abs(ai.vy) * CFG.WALL_BOUNCE; }
+    if (ai.y > aiMaxY) { ai.y = aiMaxY; ai.vy = -Math.abs(ai.vy) * CFG.WALL_BOUNCE; }
 
     // Body-body collision (push AI out)
     const bd = dist(ai.x, ai.y, pl.x, pl.y);
-    const minDist = ai.body.radius + pl.body.radius;
-    if (bd < minDist && bd > 0.1) {
-        const overlap = minDist - bd;
+    const bodyMinDist = ai.body.radius + pl.body.radius;
+    if (bd < bodyMinDist && bd > 0.1) {
+        const overlap = bodyMinDist - bd;
         const nx = (ai.x - pl.x) / bd;
         const ny = (ai.y - pl.y) / bd;
         ai.x += nx * overlap * 0.6;
@@ -1546,23 +1615,24 @@ function updateAI(dt, now) {
         }
     }
 
-    // --- Sword aiming ---
-    // AI aims toward player with slight inaccuracy
+    // --- Sword aiming: AI aims toward player with slight inaccuracy ---
     const aimNoise = rand(-0.15, 0.15);
     ai.mouseAngle = angleToPlayer + aimNoise;
 
-    // --- Swing decision ---
-    if (st.behavior === 'attack' && ai.canSwing && !ai.swinging) {
-        ai.swinging = true;
-        ai.swingStart = now;
-        ai.swingTargetAngle = angleToPlayer + rand(-0.2, 0.2);
-        ai.canSwing = false;
-        st.lastSwingTime = now;
-        st.behavior = 'retreat';
-        st.behaviorTimer = rand(0.3, 0.6);
-        st.retreatAngle = angleToPlayer + Math.PI + rand(-0.5, 0.5);
-        Audio.whoosh();
+    // Smooth sword tracking (same formula as local player)
+    const aiTargetAngle = ai.mouseAngle;
+    const aiAngleDiff = normAngle(aiTargetAngle - ai.swordAngle);
+    const aiMaxRot = ai.sword.trackSpeed * dt;
+    if (Math.abs(aiAngleDiff) < aiMaxRot) {
+        ai.swordAngle = aiTargetAngle;
+    } else {
+        ai.swordAngle = normAngle(ai.swordAngle + Math.sign(aiAngleDiff) * aiMaxRot);
     }
+
+    // AI trail
+    const aiTipX = ai.x + Math.cos(ai.swordAngle) * (ai.body.radius + ai.sword.length);
+    const aiTipY = ai.y + Math.sin(ai.swordAngle) * (ai.body.radius + ai.sword.length);
+    G.trails.push({ x: aiTipX, y: aiTipY, life: 0.12, maxLife: 0.12, color: ai.color });
 }
 
 // ===== RENDERING ============================================
@@ -1628,8 +1698,15 @@ function render() {
     // Score HUD
     drawHUD(ctx);
 
+    // Replay overlay
+    if (G.state === 'replay') {
+        drawReplayOverlay(ctx);
+    }
+
     // Overlay text (countdown, round end, match end)
-    drawOverlay(ctx);
+    if (G.state !== 'replay') {
+        drawOverlay(ctx);
+    }
 
     ctx.restore();
 }
@@ -1699,37 +1776,33 @@ function drawPlayer(ctx, player) {
     const sx2 = p.x + Math.cos(sAngle) * sEndDist;
     const sy2 = p.y + Math.sin(sAngle) * sEndDist;
 
-    // Sword glow when swinging
-    if (p.swinging) {
-        ctx.save();
-        ctx.strokeStyle = '#ffffff';
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = 12;
-        ctx.lineWidth = p.sword.width + 2;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(sx1, sy1);
-        ctx.lineTo(sx2, sy2);
-        ctx.stroke();
-        ctx.restore();
-    }
+    // Sword always has subtle glow
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.lineWidth = p.sword.width + 1;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(sx1, sy1);
+    ctx.lineTo(sx2, sy2);
+    ctx.stroke();
+    ctx.restore();
 
     // Sword blade
     ctx.save();
-    ctx.strokeStyle = p.swinging ? '#ffffff' : 'rgba(200, 210, 230, 0.6)';
+    ctx.strokeStyle = '#dde0ee';
     ctx.lineWidth = p.sword.width;
     ctx.lineCap = 'round';
-    if (p.swinging) {
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = 8;
-    }
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 5;
     ctx.beginPath();
     ctx.moveTo(sx1, sy1);
     ctx.lineTo(sx2, sy2);
     ctx.stroke();
 
     // Sword tip
-    ctx.fillStyle = p.swinging ? '#ffeecc' : 'rgba(200, 210, 230, 0.5)';
+    ctx.fillStyle = '#eeeeff';
     ctx.beginPath();
     ctx.arc(sx2, sy2, p.sword.width * 0.6, 0, Math.PI * 2);
     ctx.fill();
@@ -1749,22 +1822,7 @@ function drawPlayer(ctx, player) {
     drawShape(ctx, p.body.shape, p.x, p.y, p.body.radius, p.color, p.glowColor);
 
     // Eyes (look toward sword direction)
-    const lookAngle = p.swinging ? p.swordAngle : p.mouseAngle;
-    drawEyes(ctx, p.body.shape, p.x, p.y, p.body.radius, lookAngle);
-
-    // Cooldown indicator
-    if (!p.canSwing && !p.swinging) {
-        const now = performance.now();
-        const cdLeft = (p.swingCooldownEnd - now) / p.sword.cooldown;
-        if (cdLeft > 0) {
-            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.body.radius + 5, -Math.PI / 2,
-                -Math.PI / 2 + Math.PI * 2 * (1 - cdLeft));
-            ctx.stroke();
-        }
-    }
+    drawEyes(ctx, p.body.shape, p.x, p.y, p.body.radius, p.swordAngle);
 }
 
 function drawHUD(ctx) {
@@ -1809,6 +1867,37 @@ function drawHUD(ctx) {
     ctx.textAlign = 'center';
 }
 
+function drawReplayOverlay(ctx) {
+    // Dim overlay
+    ctx.fillStyle = 'rgba(10, 10, 26, 0.35)';
+    ctx.fillRect(0, 0, CFG.ARENA_W, CFG.ARENA_H);
+
+    // "REPLAY" label top-right
+    ctx.save();
+    ctx.font = 'bold 16px Bungee, monospace';
+    ctx.fillStyle = 'rgba(255, 170, 34, 0.8)';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText('REPLAY', CFG.ARENA_W - CFG.ARENA_PAD, CFG.ARENA_PAD);
+
+    // Progress bar under label
+    if (G.replayData) {
+        const progress = G.replayIndex / G.replayData.length;
+        const barW = 80;
+        const barH = 4;
+        const barX = CFG.ARENA_W - CFG.ARENA_PAD - barW;
+        const barY = CFG.ARENA_PAD + 22;
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.fillRect(barX, barY, barW, barH);
+
+        ctx.fillStyle = 'rgba(255, 170, 34, 0.7)';
+        ctx.fillRect(barX, barY, barW * progress, barH);
+    }
+
+    ctx.restore();
+}
+
 function drawOverlay(ctx) {
     const midX = CFG.ARENA_W / 2;
     const midY = CFG.ARENA_H / 2;
@@ -1841,7 +1930,7 @@ function drawOverlay(ctx) {
             ctx.fillStyle = 'rgba(200,200,220,0.5)';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'bottom';
-            ctx.fillText('WASD to move  •  Click to swing', midX, CFG.ARENA_H - 20);
+            ctx.fillText('WASD to move  \u2022  Aim with mouse', midX, CFG.ARENA_H - 20);
         }
         return;
     }
