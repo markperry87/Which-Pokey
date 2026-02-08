@@ -334,9 +334,9 @@ function generateBodyOptions(handicap = 0) {
 
         // Speed inversely related to size, with noise
         const sizeRatio = (radius - 14) / 36; // 0 = tiny, 1 = huge
-        const maxSpeed = lerp(420, 180, sizeRatio) + rand(-40, 40);
-        const accel = lerp(1800, 700, sizeRatio) + rand(-200, 200);
-        const dashSpeed = lerp(700, 350, sizeRatio) + rand(-50, 50);
+        const maxSpeed = lerp(500, 120, sizeRatio) + rand(-40, 40);
+        const accel = lerp(2200, 400, sizeRatio) + rand(-200, 200);
+        const dashSpeed = lerp(850, 250, sizeRatio) + rand(-50, 50);
 
         const shape = pick(SHAPE_TYPES);
         const adj = pick(BODY_ADJ);
@@ -345,10 +345,10 @@ function generateBodyOptions(handicap = 0) {
         options.push({
             shape,
             radius: Math.round(radius),
-            maxSpeed: Math.round(clamp(maxSpeed, 140, 460)),
-            accel: Math.round(clamp(accel, 500, 2000)),
-            dashSpeed: Math.round(clamp(dashSpeed, 300, 750)),
-            friction: +(0.88 + rand(-0.03, 0.03)).toFixed(3),
+            maxSpeed: Math.round(clamp(maxSpeed, 100, 540)),
+            accel: Math.round(clamp(accel, 300, 2400)),
+            dashSpeed: Math.round(clamp(dashSpeed, 200, 900)),
+            friction: +(0.88 + rand(-0.05, 0.05)).toFixed(3),
             name: `${adj} ${noun}`,
         });
     }
@@ -365,7 +365,7 @@ function generateSwordOptions(handicap = 0) {
 
         const lenRatio = (length - 25) / 65; // 0 = short, 1 = long
         // Track speed: longer swords track slower
-        const trackSpeed = lerp(12, 4, lenRatio) + rand(-1.5, 1.5);
+        const trackSpeed = lerp(16, 2.5, lenRatio) + rand(-1.5, 1.5);
 
         let nameList;
         if (length < 45) nameList = SWORD_NAMES_SHORT;
@@ -374,8 +374,8 @@ function generateSwordOptions(handicap = 0) {
 
         options.push({
             length: Math.round(length),
-            width: Math.round(lerp(3, 7, lenRatio) + rand(-1, 1)),
-            trackSpeed: +clamp(trackSpeed, 3, 14).toFixed(1),
+            width: Math.round(lerp(2, 8, lenRatio) + rand(-1, 1)),
+            trackSpeed: +clamp(trackSpeed, 2, 18).toFixed(1),
             name: pick(nameList),
         });
     }
@@ -940,14 +940,14 @@ function renderSelectionCards() {
         // Eyes
         drawEyes(pCtx, body.shape, 40, 40, drawRadius, 0);
 
-        // Speed stat: normalize 140-460
-        const speedPct = ((body.maxSpeed - 140) / 320) * 100;
+        // Speed stat: normalize 100-540
+        const speedPct = ((body.maxSpeed - 100) / 440) * 100;
         // Size stat: normalize radius 14-50
         const sizePct = ((body.radius - 14) / 36) * 100;
-        // Accel stat: normalize 500-2000
-        const accelPct = ((body.accel - 500) / 1500) * 100;
-        // Dash stat: normalize 300-750
-        const dashPct = ((body.dashSpeed - 300) / 450) * 100;
+        // Accel stat: normalize 300-2400
+        const accelPct = ((body.accel - 300) / 2100) * 100;
+        // Dash stat: normalize 200-900
+        const dashPct = ((body.dashSpeed - 200) / 700) * 100;
 
         card.appendChild(preview);
 
@@ -1002,8 +1002,8 @@ function renderSelectionCards() {
 
         // Length stat: normalize 25-90
         const lengthPct = ((sword.length - 25) / 65) * 100;
-        // Track speed: normalize 3-14
-        const trackPct = ((sword.trackSpeed - 3) / 11) * 100;
+        // Track speed: normalize 2-18
+        const trackPct = ((sword.trackSpeed - 2) / 16) * 100;
 
         card.appendChild(preview);
 
