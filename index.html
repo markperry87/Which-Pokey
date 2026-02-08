@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Which-Pokey</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
+</head>
+<body>
+    <div id="game-container">
+        <!-- Menu Screen -->
+        <div id="menu-screen" class="screen active">
+            <div class="menu-content">
+                <h1 class="title">WHICH-POKEY</h1>
+                <p class="subtitle">a sword dueling game</p>
+                <div class="menu-buttons">
+                    <button id="solo-btn" class="btn btn-primary btn-solo">Solo Play</button>
+                    <div class="divider"><span>multiplayer</span></div>
+                    <button id="create-btn" class="btn btn-primary">Create Room</button>
+                    <div class="divider"><span>or</span></div>
+                    <div class="join-row">
+                        <input id="room-input" type="text" placeholder="Room code" maxlength="4" autocomplete="off" spellcheck="false">
+                        <button id="join-btn" class="btn btn-secondary">Join</button>
+                    </div>
+                </div>
+                <p id="menu-status" class="status-text"></p>
+            </div>
+        </div>
+
+        <!-- Lobby Screen -->
+        <div id="lobby-screen" class="screen">
+            <div class="menu-content">
+                <h2>Your Room Code</h2>
+                <div id="room-code" class="room-code"></div>
+                <p class="subtitle">Share this code with your opponent</p>
+                <div class="loader"><div class="loader-dot"></div><div class="loader-dot"></div><div class="loader-dot"></div></div>
+                <p class="status-text">Waiting for opponent...</p>
+            </div>
+        </div>
+
+        <!-- Selection Screen -->
+        <div id="select-screen" class="screen">
+            <div class="select-content">
+                <h2 class="select-title">Choose Your Fighter</h2>
+                <div class="select-section">
+                    <h3>Body</h3>
+                    <div id="body-options" class="option-cards"></div>
+                </div>
+                <div class="select-section">
+                    <h3>Sword</h3>
+                    <div id="sword-options" class="option-cards"></div>
+                </div>
+                <div class="select-footer">
+                    <p id="opponent-status" class="status-text"></p>
+                    <button id="ready-btn" class="btn btn-primary" disabled>Pick a body & sword</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="game-screen" class="screen">
+            <canvas id="game-canvas"></canvas>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>
