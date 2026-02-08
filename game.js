@@ -23,6 +23,10 @@ const CFG = {
     ROUND_END_PAUSE: 1800,    // ms after a hit before next round
     MATCH_END_PAUSE: 3500,
 
+    // Dash
+    DASH_DURATION: 0.1,       // seconds the dash impulse lasts
+    DASH_COOLDOWN: 0.8,       // seconds between dashes
+
     // Replay
     REPLAY_BUFFER_SIZE: 120,  // ~2s at 60fps
     REPLAY_SPEED: 2,          // playback speed multiplier
@@ -228,6 +232,31 @@ const Audio = (() => {
                 osc.start(); osc.stop(c.currentTime + 0.04);
             });
         },
+
+        dash() {
+            play(c => {
+                // Short breathy burst – higher pitch noise
+                const dur = 0.1;
+                const buf = c.createBuffer(1, c.sampleRate * dur, c.sampleRate);
+                const data = buf.getChannelData(0);
+                for (let i = 0; i < data.length; i++) {
+                    const t = i / data.length;
+                    data[i] = (Math.random() * 2 - 1) * (1 - t * t) * 0.25;
+                }
+                const src = c.createBufferSource();
+                src.buffer = buf;
+                const bp = c.createBiquadFilter();
+                bp.type = 'bandpass';
+                bp.frequency.setValueAtTime(3500, c.currentTime);
+                bp.frequency.linearRampToValueAtTime(1500, c.currentTime + dur);
+                bp.Q.value = 1.0;
+                const gain = c.createGain();
+                gain.gain.setValueAtTime(0.35, c.currentTime);
+                gain.gain.linearRampToValueAtTime(0, c.currentTime + dur);
+                src.connect(bp).connect(gain).connect(c.destination);
+                src.start();
+            });
+        },
     };
 })();
 
@@ -307,6 +336,7 @@ function generateBodyOptions(handicap = 0) {
         const sizeRatio = (radius - 14) / 36; // 0 = tiny, 1 = huge
         const maxSpeed = lerp(420, 180, sizeRatio) + rand(-40, 40);
         const accel = lerp(1800, 700, sizeRatio) + rand(-200, 200);
+        const dashSpeed = lerp(700, 350, sizeRatio) + rand(-50, 50);
 
         const shape = pick(SHAPE_TYPES);
         const adj = pick(BODY_ADJ);
@@ -317,6 +347,7 @@ function generateBodyOptions(handicap = 0) {
             radius: Math.round(radius),
             maxSpeed: Math.round(clamp(maxSpeed, 140, 460)),
             accel: Math.round(clamp(accel, 500, 2000)),
+            dashSpeed: Math.round(clamp(dashSpeed, 300, 750)),
             friction: +(0.88 + rand(-0.03, 0.03)).toFixed(3),
             name: `${adj} ${noun}`,
         });
@@ -634,6 +665,13 @@ function createPlayer(num, body, sword) {
         // Mouse (for remote display)
         mouseAngle: num === 1 ? 0 : Math.PI,
 
+        // Dash state
+        dashing: false,
+        dashTimer: 0,
+        dashDirX: 0,
+        dashDirY: 0,
+        dashCooldownEnd: 0,
+
         // Interpolation targets (for remote player)
         _targetX: startX,
         _targetY: startY,
@@ -650,6 +688,11 @@ function resetPlayerPosition(p) {
     p.swordAngle = p.num === 1 ? 0 : Math.PI;
     p.mouseAngle = p.num === 1 ? 0 : Math.PI;
     p.lastClashTime = 0;
+    p.dashing = false;
+    p.dashTimer = 0;
+    p.dashDirX = 0;
+    p.dashDirY = 0;
+    p.dashCooldownEnd = 0;
 }
 
 // ===== INPUT ================================================
@@ -903,6 +946,8 @@ function renderSelectionCards() {
         const sizePct = ((body.radius - 14) / 36) * 100;
         // Accel stat: normalize 500-2000
         const accelPct = ((body.accel - 500) / 1500) * 100;
+        // Dash stat: normalize 300-750
+        const dashPct = ((body.dashSpeed - 300) / 450) * 100;
 
         card.appendChild(preview);
 
@@ -925,6 +970,10 @@ function renderSelectionCards() {
             <div class="stat-row">
                 <span class="stat-label">Accel</span>
                 <div class="stat-bar-bg"><div class="stat-bar accel" style="width:${accelPct}%"></div></div>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Dash</span>
+                <div class="stat-bar-bg"><div class="stat-bar dash" style="width:${dashPct}%"></div></div>
             </div>
         `;
         card.appendChild(statsDiv);
@@ -1251,25 +1300,54 @@ function updateGame(dt) {
         ay *= inv;
     }
 
-    // Apply acceleration
-    p.vx += ax * p.body.accel * dt;
-    p.vy += ay * p.body.accel * dt;
-
-    // Friction
-    p.vx *= Math.pow(p.body.friction, dt * 60);
-    p.vy *= Math.pow(p.body.friction, dt * 60);
-
-    // Speed cap
-    const speed = Math.hypot(p.vx, p.vy);
-    if (speed > p.body.maxSpeed) {
-        const s = p.body.maxSpeed / speed;
-        p.vx *= s;
-        p.vy *= s;
+    // Dash trigger
+    const now = performance.now();
+    if (G.keys[' '] && !p.dashing && now >= p.dashCooldownEnd) {
+        p.dashing = true;
+        p.dashTimer = CFG.DASH_DURATION;
+        p.dashCooldownEnd = now + CFG.DASH_COOLDOWN * 1000;
+        // Direction: WASD if held, else mouse direction
+        if (ax !== 0 || ay !== 0) {
+            p.dashDirX = ax;
+            p.dashDirY = ay;
+        } else {
+            const ma = angle(p.x, p.y, G.mouseX, G.mouseY);
+            p.dashDirX = Math.cos(ma);
+            p.dashDirY = Math.sin(ma);
+        }
+        Audio.dash();
     }
 
-    // Position
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
+    // Dash physics or normal physics
+    if (p.dashing) {
+        p.dashTimer -= dt;
+        p.vx = p.dashDirX * p.body.dashSpeed;
+        p.vy = p.dashDirY * p.body.dashSpeed;
+        if (p.dashTimer <= 0) p.dashing = false;
+        // Position (no speed cap during dash)
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+    } else {
+        // Apply acceleration
+        p.vx += ax * p.body.accel * dt;
+        p.vy += ay * p.body.accel * dt;
+
+        // Friction
+        p.vx *= Math.pow(p.body.friction, dt * 60);
+        p.vy *= Math.pow(p.body.friction, dt * 60);
+
+        // Speed cap
+        const speed = Math.hypot(p.vx, p.vy);
+        if (speed > p.body.maxSpeed) {
+            const s = p.body.maxSpeed / speed;
+            p.vx *= s;
+            p.vy *= s;
+        }
+
+        // Position
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+    }
 
     // Arena bounds with bounce
     const minX = CFG.ARENA_PAD + p.body.radius;
@@ -1509,6 +1587,16 @@ function updateAI(dt) {
         st.behavior = 'dodge';
         st.behaviorTimer = rand(0.2, 0.4);
         st.dodgeAngle = angleToPlayer + (Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+        // AI dash when dodging if off cooldown
+        const now = performance.now();
+        if (!ai.dashing && now >= ai.dashCooldownEnd) {
+            ai.dashing = true;
+            ai.dashTimer = CFG.DASH_DURATION;
+            ai.dashCooldownEnd = now + CFG.DASH_COOLDOWN * 1000;
+            ai.dashDirX = Math.cos(st.dodgeAngle);
+            ai.dashDirY = Math.sin(st.dodgeAngle);
+            Audio.dash();
+        }
     }
 
     // --- Behavior timer ---
@@ -1572,21 +1660,30 @@ function updateAI(dt) {
     if (mag > 0.01) { moveX /= mag; moveY /= mag; }
 
     // --- Apply same physics as local player ---
-    ai.vx += moveX * ai.body.accel * dt;
-    ai.vy += moveY * ai.body.accel * dt;
+    if (ai.dashing) {
+        ai.dashTimer -= dt;
+        ai.vx = ai.dashDirX * ai.body.dashSpeed;
+        ai.vy = ai.dashDirY * ai.body.dashSpeed;
+        if (ai.dashTimer <= 0) ai.dashing = false;
+        ai.x += ai.vx * dt;
+        ai.y += ai.vy * dt;
+    } else {
+        ai.vx += moveX * ai.body.accel * dt;
+        ai.vy += moveY * ai.body.accel * dt;
 
-    ai.vx *= Math.pow(ai.body.friction, dt * 60);
-    ai.vy *= Math.pow(ai.body.friction, dt * 60);
+        ai.vx *= Math.pow(ai.body.friction, dt * 60);
+        ai.vy *= Math.pow(ai.body.friction, dt * 60);
 
-    const spd = Math.hypot(ai.vx, ai.vy);
-    if (spd > ai.body.maxSpeed) {
-        const s = ai.body.maxSpeed / spd;
-        ai.vx *= s;
-        ai.vy *= s;
+        const spd = Math.hypot(ai.vx, ai.vy);
+        if (spd > ai.body.maxSpeed) {
+            const s = ai.body.maxSpeed / spd;
+            ai.vx *= s;
+            ai.vy *= s;
+        }
+
+        ai.x += ai.vx * dt;
+        ai.y += ai.vy * dt;
     }
-
-    ai.x += ai.vx * dt;
-    ai.y += ai.vy * dt;
 
     // Arena bounds with bounce
     const aiMinX = CFG.ARENA_PAD + ai.body.radius;
@@ -1766,6 +1863,17 @@ function drawArena(ctx) {
 function drawPlayer(ctx, player) {
     const p = player;
 
+    // Dash afterimage
+    if (p.dashing) {
+        const offX = -p.dashDirX * 15;
+        const offY = -p.dashDirY * 15;
+        ctx.globalAlpha = 0.25;
+        drawShape(ctx, p.body.shape, p.x + offX, p.y + offY, p.body.radius, p.color, null);
+        ctx.globalAlpha = 1;
+        // Spawn trail particles along movement path
+        Particles.spawn(p.x + offX, p.y + offY, 2, p.color, 30, 80, 0.2);
+    }
+
     // Sword
     const sAngle = p.swordAngle;
     const sStartDist = p.body.radius;
@@ -1823,6 +1931,22 @@ function drawPlayer(ctx, player) {
 
     // Eyes (look toward sword direction)
     drawEyes(ctx, p.body.shape, p.x, p.y, p.body.radius, p.swordAngle);
+
+    // Dash cooldown arc
+    const now = performance.now();
+    if (now < p.dashCooldownEnd) {
+        const remain = (p.dashCooldownEnd - now) / (CFG.DASH_COOLDOWN * 1000);
+        const arcAngle = remain * Math.PI * 2;
+        ctx.save();
+        ctx.strokeStyle = p.color;
+        ctx.globalAlpha = 0.4;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.body.radius + 5, -Math.PI / 2, -Math.PI / 2 + arcAngle);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
 }
 
 function drawHUD(ctx) {
@@ -1930,7 +2054,7 @@ function drawOverlay(ctx) {
             ctx.fillStyle = 'rgba(200,200,220,0.5)';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'bottom';
-            ctx.fillText('WASD to move  \u2022  Aim with mouse', midX, CFG.ARENA_H - 20);
+            ctx.fillText('WASD to move  \u2022  Aim with mouse  \u2022  Space to dash', midX, CFG.ARENA_H - 20);
         }
         return;
     }

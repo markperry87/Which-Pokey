@@ -353,6 +353,7 @@ html, body {
 .stat-bar.speed { background: var(--p1); }
 .stat-bar.size { background: var(--p2); }
 .stat-bar.accel { background: var(--success); }
+.stat-bar.dash { background: #ff88cc; }
 .stat-bar.length { background: var(--accent); }
 .stat-bar.track { background: #66cccc; }
 
